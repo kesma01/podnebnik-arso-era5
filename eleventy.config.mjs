@@ -8,6 +8,7 @@ export default function (eleventyConfig) {
 
     eleventyConfig.addPlugin(EleventyVitePlugin, {
         viteOptions: {
+            base: "/ali-je-vroce/",
             plugins: [
                 TailwindCSS(),
                 SolidPlugin(),
