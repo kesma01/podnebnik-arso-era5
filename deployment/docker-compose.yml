@@ -1,0 +1,13 @@
+services:
+  vroce:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile
+    image: podnebnik-vroce:latest
+    container_name: podnebnik-vroce
+    restart: unless-stopped
+    ports:
+      - "8091:80"
+    # Makes host.docker.internal resolve to host IP on Linux (Docker 20.10+)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

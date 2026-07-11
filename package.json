@@ -1,0 +1,28 @@
+{
+    "name": "podnebnik-vroce",
+    "version": "1.0.0",
+    "private": true,
+    "scripts": {
+        "start": "npx @11ty/eleventy --serve --incremental --quiet",
+        "build": "npx @11ty/eleventy",
+        "typecheck": "tsc --noEmit"
+    },
+    "dependencies": {
+        "@11ty/eleventy": "^3.1.5",
+        "@11ty/eleventy-plugin-vite": "^5.0.0",
+        "@highcharts/map-collection": "^2.3.2",
+        "@tailwindcss/typography": "^0.5.19",
+        "@tailwindcss/vite": "^4.2.2",
+        "@tanstack/solid-query": "^5.99.2",
+        "highcharts": "^12.6.0",
+        "leaflet": "^1.9.4",
+        "solid-js": "^1.9.12",
+        "tailwindcss": "^4.2.2",
+        "vite": "^6.3.5",
+        "vite-plugin-solid": "^2.11.6"
+    },
+    "devDependencies": {
+        "typescript": "^5.8.3"
+    },
+    "packageManager": "yarn@4.9.4"
+}
