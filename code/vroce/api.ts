@@ -8,18 +8,8 @@ const DS = `${import.meta.env.VITE_DATASETTE_URL ?? ""}/datasette/climate-si`;
 // Vremenar live proxy — same-origin by default; override with VITE_VREMENAR_URL for cross-origin dev
 const VR = `${import.meta.env.VITE_VREMENAR_URL ?? ""}/vremenar/staging`;
 
-// ERA5 station name → Vremenar station_id (stations without IDs are history-only)
-const VREMENAR_ID: Record<string, number> = {
-  Ljubljana:     1495,
-  Maribor:       1491,
-  Celje:         1025,
-  Novo_Mesto:    1447,
-  Murska_Sobota: 1444,
-  Nova_Gorica:   1402,
-  Postojna:      1455,
-  Kocevje:       1426,
-  Kredarica:     1430,
-};
+// Populated during fetchMeta() from the Datasette stations table (station_id column)
+let vremenarIdMap: Record<string, number> = {};
 
 // category_key thresholds aligned with TodayGauge BOUNDS [0,10,20,80,95,101]
 const CAT_COLORS: Record<string, string> = {
@@ -79,10 +69,19 @@ async function fetchDailyWindowRow(era5Name: string, month: number, day: number)
 
 export async function fetchMeta(): Promise<SiteMeta> {
   const stations = await dsGet<Array<{
-    era5_name: string; lat: number; lon: number; elevation: number;
+    era5_name: string; name: string; lat: number; lon: number;
+    elevation: number; station_id: number | null;
   }>>(
-    "stations.json?_shape=array&_col=era5_name&_col=lat&_col=lon&_col=elevation&_size=30"
+    "stations.json?_shape=array&_col=era5_name&_col=name&_col=lat&_col=lon&_col=elevation&_col=station_id&_size=30"
   );
+
+  // Build the Vremenar live-data map from what's actually in the database
+  vremenarIdMap = Object.fromEntries(
+    stations
+      .filter(s => s.station_id != null)
+      .map(s => [s.era5_name, s.station_id as number])
+  );
+
   return {
     country:          "si",
     name:             "Slovenija",
@@ -104,6 +103,7 @@ export async function fetchMeta(): Promise<SiteMeta> {
     branding: { site_title: "Podnebnik · Ali je vroče?", domain: "podnebnik.kesma.wtf" },
     stations: stations.map(s => ({
       name:      s.era5_name,
+      label:     s.name,
       lat:       s.lat,
       lon:       s.lon,
       elevation: s.elevation,
@@ -120,7 +120,7 @@ export async function fetchMeta(): Promise<SiteMeta> {
 export async function fetchTodayStatus(date: string, loc: string | null): Promise<TodayStatus> {
   const era5Name = loc ?? "Ljubljana";
   const { month, day } = dateToMonthDay(date);
-  const stationId = VREMENAR_ID[era5Name];
+  const stationId = vremenarIdMap[era5Name];
 
   let todayTemp: number | null = null;
   let isPreliminary = false;

@@ -101,7 +101,7 @@ export function TodayCard(props: Props) {
         >
           <option value="">Slovenija</option>
           <For each={props.meta.stations}>
-            {(s) => <option value={s.name}>{s.name.replace(/_/g, " ")}</option>}
+            {(s) => <option value={s.name}>{s.label ?? s.name}</option>}
           </For>
         </select>
       </div>

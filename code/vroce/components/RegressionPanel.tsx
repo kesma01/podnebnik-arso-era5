@@ -151,7 +151,7 @@ export function RegToolbar() {
                 return (
                   <label style={{ display: "flex", "align-items": "center", gap: "8px", padding: "5px 12px", cursor: "pointer", "font-size": "12px", "font-family": "var(--font-sans)", color: "var(--color-ink)", background: active() ? "var(--color-paper-2)" : "transparent" }}>
                     <input type="checkbox" checked={active()} onChange={() => s.toggleLoc(st.name)} />
-                    {st.name.replace(/_/g, " ")}
+                    {st.label ?? st.name}
                   </label>
                 );
               }}
