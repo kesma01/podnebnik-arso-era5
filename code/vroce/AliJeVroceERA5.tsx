@@ -8,7 +8,7 @@ function fmtDayLabel(dl: string): string {
   const [mon, day] = dl.split(" ");
   return `${(day ?? "").padStart(2, "0")}.${EN_MONTHS[mon ?? ""] ?? "??"}`;
 }
-import { fetchMeta, fetchPageData, fetchSeasonHeatmap, fetchSpeiHeatmap, fetchSpeiStationSeasonal } from "./api.ts";
+import { fetchMeta, fetchPageData, fetchSeasonHeatmap, fetchSpeiHeatmap, fetchSpeiStationSeasonal, isArsoLoc } from "./api.ts";
 import { TodayCard } from "./components/TodayCard.tsx";
 import { DistributionChart } from "./charts/DistributionChart.tsx";
 import { TodayTrendChart }   from "./components/TodayTrendChart.tsx";
@@ -47,6 +47,7 @@ function Dashboard(props: { meta: SiteMeta }) {
   const [loc,  setLoc]  = createSignal<string | null>(null);
 
   const defaultDoy = createMemo(() => dateToDoy(date()));
+  const isArso = createMemo(() => isArsoLoc(loc() ?? ""));
 
   const [pageData] = createResource(
     () => ({ date: date(), loc: loc() }),
@@ -92,7 +93,7 @@ function Dashboard(props: { meta: SiteMeta }) {
             )}
           </Show>
 
-          <Show when={todayData()?.available}>
+          <Show when={todayData()?.available && !isArso()}>
             <div class="today-chart">
               <div class="today-chart-title">
                 Dnevne najvišje temperature {todayData()?.loc ? `na postaji ${todayData()!.loc!.replace(/_/g, " ")}` : "v Sloveniji"} za dve tedni okoli {fmtDayLabel(todayData()!.day_label ?? "")} od {todayData()!.year_min}
@@ -107,12 +108,17 @@ function Dashboard(props: { meta: SiteMeta }) {
             </div>
           </Show>
 
-          <Show when={todayData()?.available}>
+          <Show when={todayData()?.available && !isArso()}>
             <TodayTrendChart date={date()} loc={loc()} />
           </Show>
         </div>
       </section>
 
+      {/* ── Regression section (ERA5 only) ───────────────────────────
+           Hide entirely when an ARSO station is selected in TodayCard,
+           since regression/calendar use ERA5 annual_trend table only.
+      ──────────────────────────────────────────────────────────────── */}
+      <Show when={!isArso()}>
       {/* ── Regression section ────────────────────────────────────────
            Layout (mirrors original):
            1. sec-hs heading
@@ -176,6 +182,7 @@ function Dashboard(props: { meta: SiteMeta }) {
         </div>
 
       </RegressionPanel>
+      </Show>
 
       {/* ── Hero card (location details) ──────────────────────────── */}
       <section class="sec-p" style={{ "padding-top": "16px", "padding-bottom": "24px" }}>

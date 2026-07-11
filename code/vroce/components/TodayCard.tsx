@@ -1,5 +1,6 @@
 import { Show, For, createSignal, lazy, Suspense } from "solid-js";
 import type { TodayStatus, Last7, SiteMeta, RankInfo } from "../types.ts";
+import { isArsoLoc } from "../api.ts";
 import { TodayFlag } from "./TodayFlag.tsx";
 import { TodayGauge } from "../charts/TodayGauge.tsx";
 
@@ -100,9 +101,16 @@ export function TodayCard(props: Props) {
           onChange={(e) => props.onLocChange(e.currentTarget.value)}
         >
           <option value="">Slovenija</option>
-          <For each={props.meta.stations}>
-            {(s) => <option value={s.name}>{s.label ?? s.name}</option>}
-          </For>
+          <optgroup label="ARSO postaje">
+            <For each={props.meta.stations.filter(s => s.source === "arso")}>
+              {(s) => <option value={s.name}>{s.label}</option>}
+            </For>
+          </optgroup>
+          <optgroup label="ERA5 postaje">
+            <For each={props.meta.stations.filter(s => s.source === "era5")}>
+              {(s) => <option value={s.name}>{s.label ?? s.name}</option>}
+            </For>
+          </optgroup>
         </select>
       </div>
 
@@ -158,8 +166,10 @@ export function TodayCard(props: Props) {
           {/* Explain */}
           <p class="today-explain">
             {r().loc
-              ? `Temperatura na postaji ${r().loc!.replace(/_/g, " ")}, razvrstena glede na zapise ERA5-Land od leta ${r().year_min} za isto ±7-dnevno okno.`
-              : `Današnji vrh je najvišja napovedana temperatura na vseh 18 postajah, razvrstena glede na zapise ERA5-Land od leta ${r().year_min} za isto ±7-dnevno okno.`
+              ? isArsoLoc(r().loc!)
+                ? `Temperatura na ARSO postaji ${r().loc!.replace("arso:", "").replace(/_/g, " ")}, razvrstena glede na percentilne zapise ARSO meritev.`
+                : `Temperatura na postaji ${r().loc!.replace(/_/g, " ")}, razvrstena glede na zapise ERA5-Land od leta ${r().year_min} za isto ±7-dnevno okno.`
+              : `Današnji vrh je najvišja napovedana temperatura, razvrstena glede na zapise ERA5-Land od leta ${r().year_min} za isto ±7-dnevno okno.`
             }
           </p>
 
