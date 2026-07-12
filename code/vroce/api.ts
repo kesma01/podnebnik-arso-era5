@@ -249,8 +249,20 @@ export async function fetchTodayStatus(date: string, loc: string | null): Promis
 
   if (isArsoLoc(era5Name)) {
     const stationId = arsoStationId(era5Name);
+    const todayStr  = new Date().toISOString().slice(0, 10);
+    const isToday   = date === todayStr;
+    const year      = Number(date.slice(0, 4));
+
+    // For today: Vremenar live max_24h. For past dates: look up from cached historical data.
+    const tempPromise: Promise<number | null> = isToday
+      ? vremenarTemp(stationId)
+      : fetchArsoAllDaily(stationId).then(rows => {
+          const row = rows.find(r => r.year === year && r.month === month && r.day === day);
+          return row?.temperature_max_2m ?? null;
+        });
+
     const [todayTemp, percs] = await Promise.all([
-      vremenarTemp(stationId),
+      tempPromise,
       computeArsoPercentiles(stationId, month, day),
     ]);
     if (todayTemp == null || !percs) return { available: false };
