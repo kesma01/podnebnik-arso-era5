@@ -185,7 +185,7 @@ export function TodayCard(props: Props) {
           <p class="today-explain">
             {r().loc
               ? isArsoLoc(r().loc!)
-                ? `Temperatura na ARSO postaji ${r().loc!.replace("arso:", "").replace(/_/g, " ")}, razvrstena glede na percentilne zapise ARSO meritev.`
+                ? `Temperatura na ARSO postaji ${props.meta.stations.find(s => s.name === r().loc)?.label ?? r().loc!.replace("arso:", "")}, razvrstena glede na percentilne zapise ARSO meritev.`
                 : `Temperatura na postaji ${r().loc!.replace(/_/g, " ")}, razvrstena glede na zapise ERA5-Land od leta ${r().year_min} za isto ±7-dnevno okno.`
               : `Današnji vrh je najvišja napovedana temperatura, razvrstena glede na zapise ERA5-Land od leta ${r().year_min} za isto ±7-dnevno okno.`
             }
