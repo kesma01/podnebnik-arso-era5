@@ -31,7 +31,7 @@ const CAT_DESCS_ERA5: Record<string, string> = {
 };
 
 function catDesc(catKey: string, r: TodayStatus): string {
-  const isArso = r.year_min === 0;
+  const isArso = r.loc ? isArsoLoc(r.loc) : false;
   const tpl = (isArso ? CAT_DESCS : CAT_DESCS_ERA5)[catKey] ?? "";
   const d = fmtDayLabel(r.day_label ?? "");
   const yearMin = r.year_min ?? 1950;
@@ -158,11 +158,13 @@ export function TodayCard(props: Props) {
             <div class="today-pct-wrap">
               <span class="today-pct-num">{(r().percentile ?? 0).toFixed(0)}</span>
               <span class="today-pct-label">percentil</span>
-              <Show when={(r().n_samples ?? 0) > 0}>
-                <span class="today-pct-samples">{(r().n_samples ?? 0).toLocaleString()} vzorcev</span>
-              </Show>
-              <Show when={(r().n_samples ?? 0) === 0}>
+              <Show when={r().loc && isArsoLoc(r().loc!)}>
                 <span class="today-pct-samples">ARSO meritve</span>
+              </Show>
+              <Show when={!r().loc || !isArsoLoc(r().loc ?? "")}>
+                <Show when={(r().n_samples ?? 0) > 0}>
+                  <span class="today-pct-samples">{(r().n_samples ?? 0).toLocaleString()} vzorcev</span>
+                </Show>
               </Show>
               <Show when={r().is_preliminary}>
                 <span style={{
@@ -211,9 +213,11 @@ export function TodayCard(props: Props) {
           {/* Footer */}
           <div class="today-foot">
             {(r().today_temp ?? 0).toFixed(1)} °C · {(r().percentile ?? 0).toFixed(0)}. percentil
-            {(r().n_samples ?? 0) > 0
-              ? ` · ${(r().n_samples ?? 0).toLocaleString()} vzorcev (${r().year_min}–${r().year_max})`
-              : " · vir: ARSO"
+            {r().loc && isArsoLoc(r().loc!)
+              ? ` · ${(r().n_samples ?? 0).toLocaleString()} vzorcev (${r().year_min}–${r().year_max}) · vir: ARSO`
+              : (r().n_samples ?? 0) > 0
+                ? ` · ${(r().n_samples ?? 0).toLocaleString()} vzorcev (${r().year_min}–${r().year_max})`
+                : ""
             }
           </div>
 

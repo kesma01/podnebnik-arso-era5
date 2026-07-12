@@ -21,11 +21,6 @@ function arsoStationId(loc: string): number {
   return Number(loc.replace("arso:", ""));
 }
 
-// For ARSO percentiles: table covers 2025-07-01 → 2026-06-30
-function arsoPercentileDate(month: number, day: number): string {
-  const year = month >= 7 ? 2025 : 2026;
-  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-}
 
 const CAT_COLORS: Record<string, string> = {
   hell:     "#962c1a",
@@ -102,16 +97,60 @@ function categorizeEra5(temp: number, w: DailyWindowRow): { category_key: string
   return                    { category_key: "freezing", percentile:  5,   color: CAT_COLORS.freezing };
 }
 
-interface ArsoPercentileRow {
-  p05: number; p20: number; p50: number; p80: number; p95: number;
+interface ComputedPercentiles {
+  p05: number; p10: number; p20: number; p50: number; p80: number; p95: number;
+  n_samples: number; year_min: number; year_max: number;
+  sorted: number[];
 }
 
-function categorizeArso(temp: number, p: ArsoPercentileRow): { category_key: string; percentile: number; color: string } {
-  if (temp >= p.p95) return { category_key: "hell",     percentile: 97.5, color: CAT_COLORS.hell     };
-  if (temp >= p.p80) return { category_key: "hot",      percentile: 87.5, color: CAT_COLORS.hot      };
-  if (temp >= p.p20) return { category_key: "nope",     percentile: 50,   color: CAT_COLORS.nope     };
-  if (temp >= p.p05) return { category_key: "cold",     percentile: 15,   color: CAT_COLORS.cold     };
-  return                    { category_key: "freezing", percentile:  5,   color: CAT_COLORS.freezing };
+// Binary-search rank: fraction of sorted values strictly below `value`
+function rankPercentile(sorted: number[], value: number): number {
+  let lo = 0, hi = sorted.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (sorted[mid]! < value) lo = mid + 1;
+    else hi = mid;
+  }
+  return Math.round((lo / sorted.length) * 100);
+}
+
+async function computeArsoPercentiles(
+  stationId: number, month: number, day: number,
+): Promise<ComputedPercentiles | null> {
+  const rows      = await fetchArsoAllDaily(stationId);
+  const targetDoy = monthDayToDoy(month, day);
+
+  const inWindow = rows.filter(r => {
+    if (r.temperature_max_2m == null) return false;
+    const doy  = monthDayToDoy(r.month, r.day);
+    const diff = Math.abs(doy - targetDoy);
+    return Math.min(diff, 365 - diff) <= 7;
+  });
+  if (inWindow.length < 10) return null;
+
+  const sorted  = inWindow.map(r => r.temperature_max_2m!).sort((a, b) => a - b);
+  const years   = inWindow.map(r => r.year);
+  return {
+    p05:       percentileOf(sorted, 0.05),
+    p10:       percentileOf(sorted, 0.10),
+    p20:       percentileOf(sorted, 0.20),
+    p50:       percentileOf(sorted, 0.50),
+    p80:       percentileOf(sorted, 0.80),
+    p95:       percentileOf(sorted, 0.95),
+    n_samples: sorted.length,
+    year_min:  Math.min(...years),
+    year_max:  Math.max(...years),
+    sorted,
+  };
+}
+
+function categorizeArso(temp: number, p: ComputedPercentiles): { category_key: string; percentile: number; color: string } {
+  const category_key =
+    temp >= p.p95 ? "hell"     :
+    temp >= p.p80 ? "hot"      :
+    temp >= p.p20 ? "nope"     :
+    temp >= p.p05 ? "cold"     : "freezing";
+  return { category_key, percentile: rankPercentile(p.sorted, temp), color: CAT_COLORS[category_key] };
 }
 
 async function fetchEra5WindowRow(era5Name: string, month: number, day: number): Promise<DailyWindowRow | null> {
@@ -121,17 +160,6 @@ async function fetchEra5WindowRow(era5Name: string, month: number, day: number):
   return rows[0] ?? null;
 }
 
-async function fetchArsoPercentileRow(stationId: number, month: number, day: number): Promise<ArsoPercentileRow | null> {
-  const date = arsoPercentileDate(month, day);
-  // stage-data returns array rows: [rowid, station_id, date, p00, p05, p20, p40, p50, p60, p80, p95, p100]
-  const data = await sdGet(
-    "temperature.slovenia_historical.daily.average_percentiles",
-    `station_id__exact=${stationId}&date__exact=${date}&_col=p05&_col=p20&_col=p50&_col=p80&_col=p95`
-  );
-  if (!Array.isArray(data) || !data[0]) return null;
-  const r = data[0] as { p05: number; p20: number; p50: number; p80: number; p95: number };
-  return { p05: r.p05, p20: r.p20, p50: r.p50, p80: r.p80, p95: r.p95 };
-}
 
 async function vremenarTemp(stationId: number): Promise<number | null> {
   try {
@@ -221,19 +249,19 @@ export async function fetchTodayStatus(date: string, loc: string | null): Promis
 
   if (isArsoLoc(era5Name)) {
     const stationId = arsoStationId(era5Name);
-    const [todayTemp, perc] = await Promise.all([
+    const [todayTemp, percs] = await Promise.all([
       vremenarTemp(stationId),
-      fetchArsoPercentileRow(stationId, month, day),
+      computeArsoPercentiles(stationId, month, day),
     ]);
-    if (todayTemp == null || !perc) return { available: false };
-    const cat = categorizeArso(todayTemp, perc);
+    if (todayTemp == null || !percs) return { available: false };
+    const cat = categorizeArso(todayTemp, percs);
     return {
       available: true, date,
       today_temp: todayTemp, is_preliminary: false,
       percentile: cat.percentile, category_key: cat.category_key, color: cat.color,
-      n_samples: 0, year_min: 0, year_max: 0,
-      distribution: syntheticDistribution(perc.p05, perc.p50, perc.p95),
-      cutoffs: { p5: perc.p05, p10: perc.p05, p20: perc.p20, p50: perc.p50, p80: perc.p80, p95: perc.p95 },
+      n_samples: percs.n_samples, year_min: percs.year_min, year_max: percs.year_max,
+      distribution: syntheticDistribution(percs.p05, percs.p50, percs.p95),
+      cutoffs: { p5: percs.p05, p10: percs.p10, p20: percs.p20, p50: percs.p50, p80: percs.p80, p95: percs.p95 },
       day_label: dayLabel(month, day), month_num: month, day_num: day,
       rank_info: null, loc: era5Name,
     };
@@ -288,9 +316,9 @@ export async function fetchLast7(date: string, loc: string | null): Promise<Last
 
     const dayResults = await Promise.all(
       rows.map(async r => {
-        const perc = await fetchArsoPercentileRow(stationId, r.month, r.day);
-        if (!perc || r.temperature_max_2m == null) return null;
-        const cat = categorizeArso(r.temperature_max_2m, perc);
+        const percs = await computeArsoPercentiles(stationId, r.month, r.day);
+        if (!percs || r.temperature_max_2m == null) return null;
+        const cat = categorizeArso(r.temperature_max_2m, percs);
         return { date: r.date, day_label: dayLabel(r.month, r.day), today_temp: r.temperature_max_2m, percentile: cat.percentile, category_key: cat.category_key, color: cat.color };
       })
     );
@@ -325,12 +353,12 @@ export async function fetchDailyWindow(station: string | null, month: number, da
 
   if (isArsoLoc(loc)) {
     const stationId = arsoStationId(loc);
-    const perc = await fetchArsoPercentileRow(stationId, month, day);
-    if (!perc) return [];
+    const percs = await computeArsoPercentiles(stationId, month, day);
+    if (!percs) return [];
     return [{
       station: loc, month, day,
-      p5: perc.p05, p10: perc.p05, p20: perc.p20, p50: perc.p50, p80: perc.p80, p95: perc.p95,
-      n_samples: 0, year_min: 1950, year_max: 2024,
+      p5: percs.p05, p10: percs.p10, p20: percs.p20, p50: percs.p50, p80: percs.p80, p95: percs.p95,
+      n_samples: percs.n_samples, year_min: percs.year_min, year_max: percs.year_max,
       distribution_json: "[]",
     }];
   }
