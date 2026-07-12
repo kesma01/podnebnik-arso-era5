@@ -12,6 +12,10 @@ const VR = `${import.meta.env.VITE_VREMENAR_URL ?? ""}/vremenar/staging`;
 
 // Populated during fetchMeta() from climate-si stations table
 let vremenarIdMap: Record<string, number> = {};
+// Populated during fetchMeta() — all ARSO station IDs for national average
+let arsoStationIds: number[] = [];
+
+export const ARSO_NATIONAL = "arso:national";
 
 export function isArsoLoc(loc: string): boolean {
   return loc.startsWith("arso:");
@@ -19,6 +23,59 @@ export function isArsoLoc(loc: string): boolean {
 
 function arsoStationId(loc: string): number {
   return Number(loc.replace("arso:", ""));
+}
+
+// ── Datasette SQL helper ───────────────────────────────────────────────────────
+
+async function sdSql<T extends unknown[]>(sql: string): Promise<T[]> {
+  const resp = await fetch(`${SD}.json?sql=${encodeURIComponent(sql)}`);
+  if (!resp.ok) throw new Error(`stage-data SQL ${resp.status}`);
+  const data = await resp.json() as { rows: T[] };
+  return data.rows;
+}
+
+// ── National ARSO average (per-month cache of station-averaged daily max) ─────
+
+interface NationalDayRow { year: number; month: number; day: number; avg: number }
+
+const arsoNationalMonthCache = new Map<number, Promise<NationalDayRow[]>>();
+
+async function fetchArsoNationalByMonth(month: number): Promise<NationalDayRow[]> {
+  if (arsoNationalMonthCache.has(month)) return arsoNationalMonthCache.get(month)!;
+  const promise = sdSql<[number, number, number, number]>(
+    `SELECT year,month,day,AVG(temperature_max_2m) as avg` +
+    ` FROM "temperature.slovenia_historical.daily"` +
+    ` WHERE month=${month} AND temperature_max_2m IS NOT NULL` +
+    ` GROUP BY year,month,day ORDER BY year,month,day`
+  ).then(rows => rows.map(([year, month, day, avg]) => ({ year, month, day, avg })));
+  arsoNationalMonthCache.set(month, promise);
+  return promise;
+}
+
+async function computeArsoNationalPercentiles(month: number, day: number): Promise<ComputedPercentiles | null> {
+  const months  = [...new Set([Math.max(1, month - 1), month, Math.min(12, month + 1)])];
+  const chunks  = await Promise.all(months.map(m => fetchArsoNationalByMonth(m)));
+  const allRows = chunks.flat();
+
+  const targetDoy = monthDayToDoy(month, day);
+  const inWindow  = allRows.filter(r => {
+    const doy  = monthDayToDoy(r.month, r.day);
+    const diff = Math.abs(doy - targetDoy);
+    return Math.min(diff, 365 - diff) <= 7;
+  });
+  if (inWindow.length < 10) return null;
+
+  const sorted = inWindow.map(r => r.avg).sort((a, b) => a - b);
+  const years  = inWindow.map(r => r.year);
+  return {
+    p05: percentileOf(sorted, 0.05), p10: percentileOf(sorted, 0.10),
+    p20: percentileOf(sorted, 0.20), p50: percentileOf(sorted, 0.50),
+    p80: percentileOf(sorted, 0.80), p95: percentileOf(sorted, 0.95),
+    n_samples: sorted.length,
+    year_min:  Math.min(...years),
+    year_max:  Math.max(...years),
+    sorted,
+  };
 }
 
 
@@ -195,6 +252,9 @@ export async function fetchMeta(): Promise<SiteMeta> {
   type ArsoRow = { station_id: number; name: string; name_locative: string };
   const arsoStations: ArsoRow[] = Array.isArray(arsoRaw) ? arsoRaw : [];
 
+  // Populate module-level list for national average Vremenar fetches
+  arsoStationIds = arsoStations.map(s => s.station_id);
+
   const stations = [
     ...era5Stations.map(s => ({
       name:      s.era5_name,
@@ -246,6 +306,43 @@ export async function fetchMeta(): Promise<SiteMeta> {
 export async function fetchTodayStatus(date: string, loc: string | null): Promise<TodayStatus> {
   const era5Name = loc ?? "Ljubljana";
   const { month, day } = dateToMonthDay(date);
+
+  if (era5Name === ARSO_NATIONAL) {
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const isToday  = date === todayStr;
+
+    let todayTempPromise: Promise<number | null>;
+    if (isToday) {
+      // Average live Vremenar temps across all ARSO stations
+      todayTempPromise = Promise.all(arsoStationIds.map(id => vremenarTemp(id))).then(temps => {
+        const valid = temps.filter((t): t is number => t !== null);
+        return valid.length > 0 ? valid.reduce((a, b) => a + b) / valid.length : null;
+      });
+    } else {
+      // Historical average from stage-data
+      todayTempPromise = sdSql<[number | null]>(
+        `SELECT AVG(temperature_max_2m) FROM "temperature.slovenia_historical.daily"` +
+        ` WHERE date='${date}' AND temperature_max_2m IS NOT NULL`
+      ).then(rows => (typeof rows[0]?.[0] === "number" ? rows[0][0] : null));
+    }
+
+    const [todayTemp, percs] = await Promise.all([
+      todayTempPromise,
+      computeArsoNationalPercentiles(month, day),
+    ]);
+    if (todayTemp == null || !percs) return { available: false };
+    const cat = categorizeArso(todayTemp, percs);
+    return {
+      available: true, date,
+      today_temp: parseFloat(todayTemp.toFixed(1)), is_preliminary: false,
+      percentile: cat.percentile, category_key: cat.category_key, color: cat.color,
+      n_samples: percs.n_samples, year_min: percs.year_min, year_max: percs.year_max,
+      distribution: syntheticDistribution(percs.p05, percs.p50, percs.p95),
+      cutoffs: { p5: percs.p05, p10: percs.p10, p20: percs.p20, p50: percs.p50, p80: percs.p80, p95: percs.p95 },
+      day_label: dayLabel(month, day), month_num: month, day_num: day,
+      rank_info: null, loc: ARSO_NATIONAL,
+    };
+  }
 
   if (isArsoLoc(era5Name)) {
     const stationId = arsoStationId(era5Name);
@@ -317,6 +414,26 @@ export async function fetchTodayStatus(date: string, loc: string | null): Promis
 export async function fetchLast7(date: string, loc: string | null): Promise<Last7> {
   const era5Name = loc ?? "Ljubljana";
 
+  if (era5Name === ARSO_NATIONAL) {
+    const rows = await sdSql<[string, number, number, number, number]>(
+      `SELECT date,year,month,day,AVG(temperature_max_2m) as avg` +
+      ` FROM "temperature.slovenia_historical.daily"` +
+      ` WHERE date<='${date}' AND temperature_max_2m IS NOT NULL` +
+      ` GROUP BY date,year,month,day ORDER BY date DESC LIMIT 7`
+    );
+    if (!rows.length) return { available: false, days: [] };
+    const dayResults = await Promise.all(
+      rows.map(async ([dateStr, , month, day, avg]) => {
+        const percs = await computeArsoNationalPercentiles(month, day);
+        if (!percs) return null;
+        const cat = categorizeArso(avg, percs);
+        return { date: dateStr, day_label: dayLabel(month, day), today_temp: parseFloat(avg.toFixed(1)), percentile: cat.percentile, category_key: cat.category_key, color: cat.color };
+      })
+    );
+    const days = dayResults.filter(Boolean) as Last7["days"];
+    return { available: days.length > 0, days };
+  }
+
   if (isArsoLoc(era5Name)) {
     const stationId = arsoStationId(era5Name);
     const rows = await sdGet(
@@ -362,6 +479,17 @@ export async function fetchLast7(date: string, loc: string | null): Promise<Last
 
 export async function fetchDailyWindow(station: string | null, month: number, day: number): Promise<DailyWindowRow[]> {
   const loc = station ?? "Ljubljana";
+
+  if (loc === ARSO_NATIONAL) {
+    const percs = await computeArsoNationalPercentiles(month, day);
+    if (!percs) return [];
+    return [{
+      station: ARSO_NATIONAL, month, day,
+      p5: percs.p05, p10: percs.p10, p20: percs.p20, p50: percs.p50, p80: percs.p80, p95: percs.p95,
+      n_samples: percs.n_samples, year_min: percs.year_min, year_max: percs.year_max,
+      distribution_json: "[]",
+    }];
+  }
 
   if (isArsoLoc(loc)) {
     const stationId = arsoStationId(loc);

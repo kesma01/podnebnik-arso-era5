@@ -8,7 +8,7 @@ function fmtDayLabel(dl: string): string {
   const [mon, day] = dl.split(" ");
   return `${(day ?? "").padStart(2, "0")}.${EN_MONTHS[mon ?? ""] ?? "??"}`;
 }
-import { fetchMeta, fetchPageData, isArsoLoc } from "./api.ts";
+import { fetchMeta, fetchPageData, isArsoLoc, ARSO_NATIONAL } from "./api.ts";
 import { TodayCard } from "./components/TodayCard.tsx";
 import { DistributionChart } from "./charts/DistributionChart.tsx";
 import { TodayTrendChart }   from "./components/TodayTrendChart.tsx";
@@ -42,12 +42,9 @@ function Dashboard(props: { meta: SiteMeta }) {
   const today = new Date().toISOString().slice(0, 10);
   const [date, setDate] = createSignal(today);
 
-  // Default to first ARSO station (Ljubljana arso:1495)
+  // Default to national ARSO average
   const arsoStations = props.meta.stations.filter(s => s.source === "arso");
-  const defaultLoc   = arsoStations.find(s => s.label === "Ljubljana")?.name
-                    ?? arsoStations[0]?.name
-                    ?? null;
-  const [loc,  setLoc]  = createSignal<string | null>(defaultLoc);
+  const [loc,  setLoc]  = createSignal<string | null>(ARSO_NATIONAL);
 
   const defaultDoy = createMemo(() => dateToDoy(date()));
   const isArso = createMemo(() => isArsoLoc(loc() ?? ""));
@@ -91,7 +88,8 @@ function Dashboard(props: { meta: SiteMeta }) {
                 today={today}
                 loading={pageData.loading}
                 onDateChange={setDate}
-                onLocChange={(v) => setLoc(v || null)}
+                onLocChange={(v) => setLoc(v === "" ? ARSO_NATIONAL : v || null)}
+                nationalLoc={ARSO_NATIONAL}
               />
             )}
           </Show>
@@ -123,7 +121,7 @@ function Dashboard(props: { meta: SiteMeta }) {
           <Show when={todayData()?.available && !isArso()}>
             <TodayTrendChart date={date()} loc={loc()} />
           </Show>
-          <Show when={todayData()?.available && isArso()}>
+          <Show when={todayData()?.available && isArso() && loc() !== ARSO_NATIONAL}>
             <ArsoTrendChart
               date={date()} loc={loc()}
               label={props.meta.stations.find(s => s.name === loc())?.label}
@@ -202,50 +200,63 @@ function Dashboard(props: { meta: SiteMeta }) {
       </RegressionPanel>
       </Show>
 
-      {/* ── ARSO: Season heatmap ──────────────────────────────────── */}
-      <section class="sec-p" style={{ "padding-bottom": "40px" }}>
-        <div class="sec-h" style={{ "padding-inline": "0", "padding-top": "24px" }}>
-          Sezonski pregled
-        </div>
-        <div class="sec-hs2">
-          Povprečna najvišja temperatura po sezonah · ARSO meritve · barve glede na referenčno obdobje
-        </div>
-        <Suspense fallback={<div class="h-40 animate-pulse bg-[var(--color-paper-2)] rounded-xl" />}>
-          <ArsoSeasonHeatmapChart loc={loc()} label={arsoMeta().stations.find(s => s.name === loc())?.label} />
-        </Suspense>
-      </section>
+      {/* ── Per-station charts (hidden when national average selected) ── */}
+      <Show when={loc() !== ARSO_NATIONAL}>
 
-      {/* ── ARSO: Tropical days ───────────────────────────────────── */}
-      <section class="sec-p" style={{ "padding-bottom": "40px" }}>
-        <div class="sec-h" style={{ "padding-inline": "0", "padding-top": "8px" }}>
-          Tropski dnevi
-        </div>
-        <div class="sec-hs2">
-          Število dni z najvišjo temperaturo nad 30 °C · ARSO meritve · linearna regresija OLS
-        </div>
-        <Suspense fallback={<div class="h-56 animate-pulse bg-[var(--color-paper-2)] rounded-xl" />}>
-          <ArsoTropicalDaysChart
-            loc={loc()} kind="days" threshold={30}
-            label={arsoMeta().stations.find(s => s.name === loc())?.label}
-          />
-        </Suspense>
-      </section>
+        {/* ── ARSO: Season heatmap ────────────────────────────────── */}
+        <section class="sec-p" style={{ "padding-bottom": "40px" }}>
+          <div class="sec-h" style={{ "padding-inline": "0", "padding-top": "24px" }}>
+            Sezonski pregled
+          </div>
+          <div class="sec-hs2">
+            Povprečna najvišja temperatura po sezonah · ARSO meritve · barve glede na referenčno obdobje
+          </div>
+          <Suspense fallback={<div class="h-40 animate-pulse bg-[var(--color-paper-2)] rounded-xl" />}>
+            <ArsoSeasonHeatmapChart loc={loc()} label={arsoMeta().stations.find(s => s.name === loc())?.label} />
+          </Suspense>
+        </section>
 
-      {/* ── ARSO: Tropical nights ─────────────────────────────────── */}
-      <section class="sec-p" style={{ "padding-bottom": "40px" }}>
-        <div class="sec-h" style={{ "padding-inline": "0", "padding-top": "8px" }}>
-          Tropske noči
-        </div>
-        <div class="sec-hs2">
-          Število noči z najnižjo temperaturo nad 20 °C · ARSO meritve · linearna regresija OLS
-        </div>
-        <Suspense fallback={<div class="h-56 animate-pulse bg-[var(--color-paper-2)] rounded-xl" />}>
-          <ArsoTropicalNightsChart
-            loc={loc()} kind="nights" threshold={20}
-            label={arsoMeta().stations.find(s => s.name === loc())?.label}
-          />
-        </Suspense>
-      </section>
+        {/* ── ARSO: Tropical days ─────────────────────────────────── */}
+        <section class="sec-p" style={{ "padding-bottom": "40px" }}>
+          <div class="sec-h" style={{ "padding-inline": "0", "padding-top": "8px" }}>
+            Tropski dnevi
+          </div>
+          <div class="sec-hs2">
+            Število dni z najvišjo temperaturo nad 30 °C · ARSO meritve · linearna regresija OLS
+          </div>
+          <Suspense fallback={<div class="h-56 animate-pulse bg-[var(--color-paper-2)] rounded-xl" />}>
+            <ArsoTropicalDaysChart
+              loc={loc()} kind="days" threshold={30}
+              label={arsoMeta().stations.find(s => s.name === loc())?.label}
+            />
+          </Suspense>
+        </section>
+
+        {/* ── ARSO: Tropical nights ───────────────────────────────── */}
+        <section class="sec-p" style={{ "padding-bottom": "40px" }}>
+          <div class="sec-h" style={{ "padding-inline": "0", "padding-top": "8px" }}>
+            Tropske noči
+          </div>
+          <div class="sec-hs2">
+            Število noči z najnižjo temperaturo nad 20 °C · ARSO meritve · linearna regresija OLS
+          </div>
+          <Suspense fallback={<div class="h-56 animate-pulse bg-[var(--color-paper-2)] rounded-xl" />}>
+            <ArsoTropicalNightsChart
+              loc={loc()} kind="nights" threshold={20}
+              label={arsoMeta().stations.find(s => s.name === loc())?.label}
+            />
+          </Suspense>
+        </section>
+
+      </Show>
+
+      <Show when={loc() === ARSO_NATIONAL}>
+        <section class="sec-p" style={{ "padding-bottom": "60px" }}>
+          <p style={{ "padding-top": "32px", color: "var(--color-ink-soft)", "font-size": "14px", "text-align": "center" }}>
+            Izberi ARSO postajo za sezonski pregled in analizo tropskih dni.
+          </p>
+        </section>
+      </Show>
 
     </div>
   );

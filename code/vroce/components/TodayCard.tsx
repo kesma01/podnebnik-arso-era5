@@ -72,6 +72,7 @@ interface Props {
   loading:      boolean;
   onDateChange: (d: string) => void;
   onLocChange:  (v: string) => void;
+  nationalLoc?: string;  // loc key for the "Slovenija" option (e.g. "arso:national")
 }
 
 export function TodayCard(props: Props) {
@@ -106,10 +107,10 @@ export function TodayCard(props: Props) {
         </button>
         <select
           class="today-loc-select"
-          value={r().loc ?? ""}
+          value={r().loc === props.nationalLoc ? (props.nationalLoc ?? "") : r().loc ?? ""}
           onChange={(e) => props.onLocChange(e.currentTarget.value)}
         >
-          <option value="">Slovenija</option>
+          <option value={props.nationalLoc ?? ""}>Slovenija</option>
           <Show when={props.meta.stations.some(s => s.source === "arso")}>
             <optgroup label="ARSO postaje">
               <For each={props.meta.stations.filter(s => s.source === "arso")}>
@@ -186,9 +187,11 @@ export function TodayCard(props: Props) {
           {/* Explain */}
           <p class="today-explain">
             {r().loc
-              ? isArsoLoc(r().loc!)
-                ? `Temperatura na ARSO postaji ${props.meta.stations.find(s => s.name === r().loc)?.label ?? r().loc!.replace("arso:", "")}, razvrstena glede na percentilne zapise ARSO meritev.`
-                : `Temperatura na postaji ${r().loc!.replace(/_/g, " ")}, razvrstena glede na zapise ERA5-Land od leta ${r().year_min} za isto ±7-dnevno okno.`
+              ? r().loc === props.nationalLoc
+                ? `Povprečna najvišja temperatura vseh ARSO postaj v Sloveniji, razvrstena glede na percentilne zapise ARSO meritev (${r().year_min}–${r().year_max}).`
+                : isArsoLoc(r().loc!)
+                  ? `Temperatura na ARSO postaji ${props.meta.stations.find(s => s.name === r().loc)?.label ?? r().loc!.replace("arso:", "")}, razvrstena glede na percentilne zapise ARSO meritev.`
+                  : `Temperatura na postaji ${r().loc!.replace(/_/g, " ")}, razvrstena glede na zapise ERA5-Land od leta ${r().year_min} za isto ±7-dnevno okno.`
               : `Današnji vrh je najvišja napovedana temperatura, razvrstena glede na zapise ERA5-Land od leta ${r().year_min} za isto ±7-dnevno okno.`
             }
           </p>
