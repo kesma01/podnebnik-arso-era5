@@ -12,6 +12,7 @@ import { fetchMeta, fetchPageData, fetchSeasonHeatmap, fetchSpeiHeatmap, fetchSp
 import { TodayCard } from "./components/TodayCard.tsx";
 import { DistributionChart } from "./charts/DistributionChart.tsx";
 import { TodayTrendChart }   from "./components/TodayTrendChart.tsx";
+import { ArsoTrendChart }    from "./components/ArsoTrendChart.tsx";
 import { RegressionPanel, RegToolbar, RegScatterCard, RegYearRoundCard,
          panelHStyle, panelTitleStyle, panelSubStyle } from "./components/RegressionPanel.tsx";
 import type { SiteMeta } from "./types.ts";
@@ -93,23 +94,35 @@ function Dashboard(props: { meta: SiteMeta }) {
             )}
           </Show>
 
-          <Show when={todayData()?.available && !isArso()}>
+          <Show when={todayData()?.available}>
             <div class="today-chart">
               <div class="today-chart-title">
-                Dnevne najvišje temperature {todayData()?.loc ? `na postaji ${todayData()!.loc!.replace(/_/g, " ")}` : "v Sloveniji"} za dve tedni okoli {fmtDayLabel(todayData()!.day_label ?? "")} od {todayData()!.year_min}
+                {isArso()
+                  ? `Porazdelitev temperatur ARSO za ${fmtDayLabel(todayData()!.day_label ?? "")}`
+                  : `Dnevne najvišje temperature ${todayData()?.loc ? `na postaji ${todayData()!.loc!.replace(/_/g, " ")}` : "v Sloveniji"} za dve tedni okoli ${fmtDayLabel(todayData()!.day_label ?? "")} od ${todayData()!.year_min}`
+                }
               </div>
               <DistributionChart data={todayData()!} chartId="dist-chart" />
               <p class="today-explain" style={{ "font-size": "12px", "padding-top": "6px" }}>
-                Krivulja prikazuje, kako pogosto se je pojavila vsaka vrhunska temperatura na dneve, kot je danes, v vseh letih. Barve označujejo klimatološke cone — od hladne modre prek tipičnega bežastega pasu do ekstremne rdeče — tako da na prvi pogled vidite, kje se uvršča današnja temperatura.
+                {isArso()
+                  ? "Krivulja je aproksimacija normalne porazdelitve iz percentilnih vrednosti ARSO meritev (p5, p20, p50, p80, p95). Barvni pasovi prikazujejo klimatološke cone."
+                  : "Krivulja prikazuje, kako pogosto se je pojavila vsaka vrhunska temperatura na dneve, kot je danes, v vseh letih. Barve označujejo klimatološke cone — od hladne modre prek tipičnega bežastega pasu do ekstremne rdeče."
+                }
               </p>
               <div class="today-foot">
-                Danes: {todayData()!.today_temp!.toFixed(1)} °C · {todayData()!.percentile!.toFixed(0)}. percentil · mediana {todayData()!.cutoffs!.p50.toFixed(1)} °C · {(todayData()!.n_samples ?? 0).toLocaleString()} opazovanj · {todayData()!.year_min}–{todayData()!.year_max}
+                {isArso()
+                  ? `Danes: ${todayData()!.today_temp!.toFixed(1)} °C · ${todayData()!.percentile!.toFixed(0)}. percentil · mediana ${todayData()!.cutoffs!.p50.toFixed(1)} °C · vir: ARSO`
+                  : `Danes: ${todayData()!.today_temp!.toFixed(1)} °C · ${todayData()!.percentile!.toFixed(0)}. percentil · mediana ${todayData()!.cutoffs!.p50.toFixed(1)} °C · ${(todayData()!.n_samples ?? 0).toLocaleString()} opazovanj · ${todayData()!.year_min}–${todayData()!.year_max}`
+                }
               </div>
             </div>
           </Show>
 
           <Show when={todayData()?.available && !isArso()}>
             <TodayTrendChart date={date()} loc={loc()} />
+          </Show>
+          <Show when={todayData()?.available && isArso()}>
+            <ArsoTrendChart date={date()} loc={loc()} />
           </Show>
         </div>
       </section>

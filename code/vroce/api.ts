@@ -62,6 +62,28 @@ function doyToMonthDay(doy: number): { month: number; day: number } {
   return { month: d.getUTCMonth() + 1, day: d.getUTCDate() };
 }
 
+function monthDayToDoy(month: number, day: number): number {
+  const DAYS = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+  return DAYS[month - 1] + day;
+}
+
+// Generate approximate normal distribution from known percentile values.
+// Temperature data is roughly normal; this gives DistributionChart a curve to draw.
+function syntheticDistribution(p05: number, p50: number, p95: number): [number, number][] {
+  const sigma = Math.max((p95 - p05) / 3.29, 0.5); // 90-pct span ÷ 3.29σ
+  const mu    = p50;
+  const lo    = mu - 4 * sigma;
+  const hi    = mu + 4 * sigma;
+  const norm  = 1 / (sigma * Math.sqrt(2 * Math.PI));
+  const pts: [number, number][] = [];
+  for (let i = 0; i <= 60; i++) {
+    const x = lo + (hi - lo) * i / 60;
+    const y = norm * Math.exp(-0.5 * ((x - mu) / sigma) ** 2);
+    pts.push([parseFloat(x.toFixed(2)), parseFloat(y.toFixed(6))]);
+  }
+  return pts;
+}
+
 function dateToMonthDay(dateStr: string): { month: number; day: number } {
   const [, m, d] = dateStr.split("-");
   return { month: Number(m), day: Number(d) };
@@ -209,8 +231,9 @@ export async function fetchTodayStatus(date: string, loc: string | null): Promis
       available: true, date,
       today_temp: todayTemp, is_preliminary: false,
       percentile: cat.percentile, category_key: cat.category_key, color: cat.color,
-      n_samples: 0, year_min: 1950, year_max: 2024,
-      distribution: [], cutoffs: { p5: perc.p05, p10: perc.p05, p20: perc.p20, p50: perc.p50, p80: perc.p80, p95: perc.p95 },
+      n_samples: 0, year_min: 0, year_max: 0,
+      distribution: syntheticDistribution(perc.p05, perc.p50, perc.p95),
+      cutoffs: { p5: perc.p05, p10: perc.p05, p20: perc.p20, p50: perc.p50, p80: perc.p80, p95: perc.p95 },
       day_label: dayLabel(month, day), month_num: month, day_num: day,
       rank_info: null, loc: era5Name,
     };
@@ -406,6 +429,77 @@ async function buildRegressionResult(
       sig_label: r.p_val < 0.05 ? "p < 0.05" : `p = ${r.p_val.toFixed(3)}`,
       n_years: r.n_years, ar1: null,
     },
+  };
+}
+
+// ── fetchArsoTrend ─────────────────────────────────────────────────────────────
+
+export interface ArsoTrend {
+  dayLabel:  string;
+  yearMin:   number;
+  yearMax:   number;
+  nYears:    number;
+  scatter:   Array<{ x: number; y: number }>;
+  trendLine: Array<[number, number]>;
+  trend10:   number;
+}
+
+export async function fetchArsoTrend(stationId: number, month: number, day: number): Promise<ArsoTrend | null> {
+  // Fetch adjacent months to cover the ±7-day window near month boundaries
+  const months = [...new Set([Math.max(1, month - 1), month, Math.min(12, month + 1)])];
+  const chunks = await Promise.all(months.map(m =>
+    sdGet(
+      "temperature.slovenia_historical.daily",
+      `station_id__exact=${stationId}&month__exact=${m}&_col=year&_col=month&_col=day&_col=temperature_max_2m&_size=1000`
+    ) as Promise<Array<{ year: number; month: number; day: number; temperature_max_2m: number }>>
+  ));
+  const allRows = chunks.flat().filter(r => r.temperature_max_2m != null);
+  if (!allRows.length) return null;
+
+  const targetDoy = monthDayToDoy(month, day);
+  const inWindow = allRows.filter(r => {
+    const doy  = monthDayToDoy(r.month, r.day);
+    const diff = Math.abs(doy - targetDoy);
+    return Math.min(diff, 365 - diff) <= 7;
+  });
+  if (!inWindow.length) return null;
+
+  // Group by year, take mean of daily max temperatures in the window
+  const byYear = new Map<number, number[]>();
+  for (const r of inWindow) {
+    if (!byYear.has(r.year)) byYear.set(r.year, []);
+    byYear.get(r.year)!.push(r.temperature_max_2m);
+  }
+  const scatter = [...byYear.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([year, temps]) => ({
+      x: year,
+      y: parseFloat((temps.reduce((s, t) => s + t, 0) / temps.length).toFixed(2)),
+    }));
+
+  if (scatter.length < 3) return null;
+
+  // OLS linear regression
+  const n     = scatter.length;
+  const sumX  = scatter.reduce((s, p) => s + p.x, 0);
+  const sumY  = scatter.reduce((s, p) => s + p.y, 0);
+  const sumXY = scatter.reduce((s, p) => s + p.x * p.y, 0);
+  const sumX2 = scatter.reduce((s, p) => s + p.x * p.x, 0);
+  const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+  const intercept = (sumY - slope * sumX) / n;
+
+  const yearMin = scatter[0].x;
+  const yearMax = scatter[scatter.length - 1].x;
+  return {
+    dayLabel:  dayLabel(month, day),
+    yearMin, yearMax,
+    nYears:    scatter.length,
+    scatter,
+    trendLine: [
+      [yearMin, parseFloat((slope * yearMin + intercept).toFixed(2))],
+      [yearMax, parseFloat((slope * yearMax + intercept).toFixed(2))],
+    ],
+    trend10: parseFloat((slope * 10).toFixed(3)),
   };
 }
 
