@@ -8,7 +8,7 @@ function fmtDayLabel(dl: string): string {
   const [mon, day] = dl.split(" ");
   return `${(day ?? "").padStart(2, "0")}.${EN_MONTHS[mon ?? ""] ?? "??"}`;
 }
-import { fetchMeta, fetchPageData, fetchSeasonHeatmap, fetchSpeiHeatmap, fetchSpeiStationSeasonal, isArsoLoc } from "./api.ts";
+import { fetchMeta, fetchPageData, isArsoLoc } from "./api.ts";
 import { TodayCard } from "./components/TodayCard.tsx";
 import { DistributionChart } from "./charts/DistributionChart.tsx";
 import { TodayTrendChart }   from "./components/TodayTrendChart.tsx";
@@ -18,14 +18,10 @@ import { RegressionPanel, RegToolbar, RegScatterCard, RegYearRoundCard,
 import type { SiteMeta } from "./types.ts";
 
 // Only below-the-fold sections stay lazy
-const SeasonHeatmapChart = lazy(() => import("./charts/SeasonHeatmap.tsx").then(m => ({ default: m.SeasonHeatmap })));
-const StationMap          = lazy(() => import("./components/StationMap.tsx").then(m => ({ default: m.StationMap })));
-const SpeiHeatmapChart    = lazy(() => import("./charts/SpeiHeatmap.tsx").then(m => ({ default: m.SpeiHeatmap })));
-const TropicalDaysChart   = lazy(() => import("./charts/TropicalChart.tsx").then(m => ({ default: m.TropicalChart })));
-const TropicalNightsChart = lazy(() => import("./charts/TropicalChart.tsx").then(m => ({ default: m.TropicalChart })));
-const HeroCardsPanel      = lazy(() => import("./components/HeroCards.tsx").then(m => ({ default: m.HeroCards })));
-const SeaLevelChart       = lazy(() => import("./charts/SeaLevelWidget.tsx").then(m => ({ default: m.SeaLevelWidget })));
-const SpeiTrendChartLazy  = lazy(() => import("./charts/SpeiTrendChart.tsx").then(m => ({ default: m.SpeiTrendChart })));
+const ArsoSeasonHeatmapChart  = lazy(() => import("./charts/ArsoSeasonHeatmap.tsx").then(m => ({ default: m.ArsoSeasonHeatmap })));
+const ArsoTropicalDaysChart   = lazy(() => import("./charts/ArsoTropicalChart.tsx").then(m => ({ default: m.ArsoTropicalChart })));
+const ArsoTropicalNightsChart = lazy(() => import("./charts/ArsoTropicalChart.tsx").then(m => ({ default: m.ArsoTropicalChart })));
+const StationMap               = lazy(() => import("./components/StationMap.tsx").then(m => ({ default: m.StationMap })));
 
 function dateToDoy(dateStr: string): number {
   const d = new Date(dateStr + "T12:00:00Z");
@@ -45,10 +41,19 @@ export function AliJeVroceERA5() {
 function Dashboard(props: { meta: SiteMeta }) {
   const today = new Date().toISOString().slice(0, 10);
   const [date, setDate] = createSignal(today);
-  const [loc,  setLoc]  = createSignal<string | null>(null);
+
+  // Default to first ARSO station (Ljubljana arso:1495)
+  const arsoStations = props.meta.stations.filter(s => s.source === "arso");
+  const defaultLoc   = arsoStations.find(s => s.label === "Ljubljana")?.name
+                    ?? arsoStations[0]?.name
+                    ?? null;
+  const [loc,  setLoc]  = createSignal<string | null>(defaultLoc);
 
   const defaultDoy = createMemo(() => dateToDoy(date()));
   const isArso = createMemo(() => isArsoLoc(loc() ?? ""));
+
+  // Pass only ARSO stations to the picker
+  const arsoMeta = (): SiteMeta => ({ ...props.meta, stations: arsoStations });
 
   const [pageData] = createResource(
     () => ({ date: date(), loc: loc() }),
@@ -58,9 +63,6 @@ function Dashboard(props: { meta: SiteMeta }) {
   const todayData = () => pageDataResolved()?.status;
   const last7Data = () => pageDataResolved()?.last7;
 
-  const [heatmapData]       = createResource(fetchSeasonHeatmap);
-  const [speiData]          = createResource(fetchSpeiHeatmap);
-  const [speiStationData]   = createResource(fetchSpeiStationSeasonal);
   const [mapLoc, setMapLoc] = createSignal<string | null>(null);
 
   return (
@@ -70,8 +72,8 @@ function Dashboard(props: { meta: SiteMeta }) {
       <section class="today-status">
         <div class="sec-heading">
           <div class="today-heading-text">
-            <span class="today-heading-title">Ali je vroče v Sloveniji?</span>
-            <span class="today-heading-subtitle">v primerjavi s tem datumom zgodovinsko</span>
+            <span class="today-heading-title">ARSO — Ali je vroče?</span>
+            <span class="today-heading-subtitle">meritve ARSO postaj v primerjavi z zgodovinskimi percentili</span>
           </div>
         </div>
 
@@ -84,7 +86,7 @@ function Dashboard(props: { meta: SiteMeta }) {
               <TodayCard
                 data={r()}
                 last7={last7Data()}
-                meta={props.meta}
+                meta={arsoMeta()}
                 date={date()}
                 today={today}
                 loading={pageData.loading}
@@ -200,103 +202,50 @@ function Dashboard(props: { meta: SiteMeta }) {
       </RegressionPanel>
       </Show>
 
-      {/* ── Hero card (location details) ──────────────────────────── */}
-      <section class="sec-p" style={{ "padding-top": "16px", "padding-bottom": "24px" }}>
-        <div class="sec-hs" style={{ "padding-inline": "0", "padding-top": "0", "padding-bottom": "10px" }}>
-          Podrobnosti lokacije
-        </div>
-        <Suspense fallback={<div style={{ height: "180px" }} class="animate-pulse rounded-xl bg-[var(--color-paper-2)]" />}>
-          <HeroCardsPanel loc={mapLoc()} doy={defaultDoy()} />
-        </Suspense>
-      </section>
-
-      {/* ── Season heatmap ────────────────────────────────────────── */}
+      {/* ── ARSO: Season heatmap ──────────────────────────────────── */}
       <section class="sec-p" style={{ "padding-bottom": "40px" }}>
         <div class="sec-h" style={{ "padding-inline": "0", "padding-top": "24px" }}>
           Sezonski pregled
         </div>
+        <div class="sec-hs2">
+          Povprečna najvišja temperatura po sezonah · ARSO meritve · barve glede na referenčno obdobje
+        </div>
         <Suspense fallback={<div class="h-40 animate-pulse bg-[var(--color-paper-2)] rounded-xl" />}>
-          <Show when={(heatmapData()?.length ?? 0) > 0}>
-            <SeasonHeatmapChart data={heatmapData()!} />
-          </Show>
+          <ArsoSeasonHeatmapChart loc={loc()} label={arsoMeta().stations.find(s => s.name === loc())?.label} />
         </Suspense>
       </section>
 
-      {/* ── SPEI heatmap ──────────────────────────────────────────── */}
-      <Show when={props.meta.features["spei_heatmap"]}>
-        <section class="sec-p" style={{ "padding-bottom": "40px" }}>
-          <div class="sec-h" style={{ "padding-inline": "0", "padding-top": "8px" }}>
-            Sezonski sušni indeks (SPEI)
-          </div>
-          <Suspense fallback={<div class="h-40 animate-pulse bg-[var(--color-paper-2)] rounded-xl" />}>
-            <Show when={speiData()?.available}>
-              <SpeiHeatmapChart data={speiData()!} />
-            </Show>
-          </Suspense>
-        </section>
-      </Show>
+      {/* ── ARSO: Tropical days ───────────────────────────────────── */}
+      <section class="sec-p" style={{ "padding-bottom": "40px" }}>
+        <div class="sec-h" style={{ "padding-inline": "0", "padding-top": "8px" }}>
+          Tropski dnevi
+        </div>
+        <div class="sec-hs2">
+          Število dni z najvišjo temperaturo nad 30 °C · ARSO meritve · linearna regresija OLS
+        </div>
+        <Suspense fallback={<div class="h-56 animate-pulse bg-[var(--color-paper-2)] rounded-xl" />}>
+          <ArsoTropicalDaysChart
+            loc={loc()} kind="days" threshold={30}
+            label={arsoMeta().stations.find(s => s.name === loc())?.label}
+          />
+        </Suspense>
+      </section>
 
-      {/* ── Drought trend per station ─────────────────────────────── */}
-      <Show when={props.meta.features["drought_trend_chart"]}>
-        <section class="sec-p" style={{ "padding-bottom": "40px" }}>
-          <div class="sec-h" style={{ "padding-inline": "0", "padding-top": "8px" }}>
-            Sušni trend po postaji — SPEI
-          </div>
-          <div class="sec-hs2">
-            Sezonski (SPEI-3) in mesečni (SPEI-30) indeks vodne bilance · Theil-Sen · ERA5-Land
-          </div>
-          <Suspense fallback={<div class="animate-pulse rounded-xl bg-[var(--color-paper-2)]" style={{ height: "400px" }} />}>
-            <Show when={speiStationData()?.available}>
-              <SpeiTrendChartLazy data={speiStationData()!} />
-            </Show>
-          </Suspense>
-        </section>
-      </Show>
-
-      {/* ── Tropical days ─────────────────────────────────────────── */}
-      <Show when={props.meta.features["tropical_days_chart"]}>
-        <section style={{ "padding-bottom": "40px" }}>
-          <div class="sec-h" style={{ "padding-top": "8px" }}>
-            Tropski dnevi
-          </div>
-          <div class="sec-hs2">
-            Število dni z najvišjo temperaturo nad pragom po postaji · ERA5-Land · lapsna korekcija nadmorske višine
-          </div>
-          <Suspense fallback={<div class="sec-p animate-pulse rounded-xl bg-[var(--color-paper-2)]" style={{ height: "360px" }} />}>
-            <TropicalDaysChart kind="days" />
-          </Suspense>
-        </section>
-      </Show>
-
-      {/* ── Tropical nights ───────────────────────────────────────── */}
-      <Show when={props.meta.features["tropical_nights_chart"]}>
-        <section style={{ "padding-bottom": "40px" }}>
-          <div class="sec-h" style={{ "padding-top": "8px" }}>
-            Tropske noči
-          </div>
-          <div class="sec-hs2">
-            Število noči z najnižjo temperaturo nad pragom po postaji · ERA5-Land · lapsna korekcija nadmorske višine
-          </div>
-          <Suspense fallback={<div class="sec-p animate-pulse rounded-xl bg-[var(--color-paper-2)]" style={{ height: "360px" }} />}>
-            <TropicalNightsChart kind="nights" />
-          </Suspense>
-        </section>
-      </Show>
-
-      {/* ── Sea level rise (Koper) ─────────────────────────────────── */}
-      <Show when={props.meta.features["sea_level_section"]}>
-        <section class="sec-p" style={{ "padding-bottom": "40px" }}>
-          <div class="sec-h" style={{ "padding-inline": "0", "padding-top": "8px" }}>
-            Dvig morske gladine — Koper
-          </div>
-          <div class="sec-hs2" style={{ "margin-bottom": "16px" }}>
-            Projekcije dviga morske gladine po scenarijih IPCC AR6 z viharnimi nalivi · severni Jadran
-          </div>
-          <Suspense fallback={<div class="animate-pulse rounded-xl bg-[#071e26]" style={{ height: "500px" }} />}>
-            <SeaLevelChart />
-          </Suspense>
-        </section>
-      </Show>
+      {/* ── ARSO: Tropical nights ─────────────────────────────────── */}
+      <section class="sec-p" style={{ "padding-bottom": "40px" }}>
+        <div class="sec-h" style={{ "padding-inline": "0", "padding-top": "8px" }}>
+          Tropske noči
+        </div>
+        <div class="sec-hs2">
+          Število noči z najnižjo temperaturo nad 20 °C · ARSO meritve · linearna regresija OLS
+        </div>
+        <Suspense fallback={<div class="h-56 animate-pulse bg-[var(--color-paper-2)] rounded-xl" />}>
+          <ArsoTropicalNightsChart
+            loc={loc()} kind="nights" threshold={20}
+            label={arsoMeta().stations.find(s => s.name === loc())?.label}
+          />
+        </Suspense>
+      </section>
 
     </div>
   );

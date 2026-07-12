@@ -110,16 +110,20 @@ export function TodayCard(props: Props) {
           onChange={(e) => props.onLocChange(e.currentTarget.value)}
         >
           <option value="">Slovenija</option>
-          <optgroup label="ARSO postaje">
-            <For each={props.meta.stations.filter(s => s.source === "arso")}>
-              {(s) => <option value={s.name}>{s.label}</option>}
-            </For>
-          </optgroup>
-          <optgroup label="ERA5 postaje">
-            <For each={props.meta.stations.filter(s => s.source === "era5")}>
-              {(s) => <option value={s.name}>{s.label ?? s.name}</option>}
-            </For>
-          </optgroup>
+          <Show when={props.meta.stations.some(s => s.source === "arso")}>
+            <optgroup label="ARSO postaje">
+              <For each={props.meta.stations.filter(s => s.source === "arso")}>
+                {(s) => <option value={s.name}>{s.label}</option>}
+              </For>
+            </optgroup>
+          </Show>
+          <Show when={props.meta.stations.some(s => s.source === "era5")}>
+            <optgroup label="ERA5 postaje">
+              <For each={props.meta.stations.filter(s => s.source === "era5")}>
+                {(s) => <option value={s.name}>{s.label ?? s.name}</option>}
+              </For>
+            </optgroup>
+          </Show>
         </select>
       </div>
 

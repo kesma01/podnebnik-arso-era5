@@ -444,16 +444,196 @@ export interface ArsoTrend {
   trend10:   number;
 }
 
+// ── Cached full station daily data ────────────────────────────────────────────
+// Avoids re-fetching when multiple charts need the same station's data.
+
+interface DailyRow {
+  year: number; month: number; day: number;
+  temperature_max_2m: number | null;
+}
+
+const arsoAllDailyCache = new Map<number, Promise<DailyRow[]>>();
+
+async function fetchArsoAllDaily(stationId: number): Promise<DailyRow[]> {
+  if (arsoAllDailyCache.has(stationId)) return arsoAllDailyCache.get(stationId)!;
+  const promise = (async () => {
+    // 12 parallel monthly requests, _size=5000 to capture full record length
+    const chunks = await Promise.all([1,2,3,4,5,6,7,8,9,10,11,12].map(m =>
+      sdGet(
+        "temperature.slovenia_historical.daily",
+        `station_id__exact=${stationId}&month__exact=${m}` +
+        `&_col=year&_col=month&_col=day&_col=temperature_max_2m&_sort=year&_size=5000`
+      ) as Promise<DailyRow[]>
+    ));
+    return chunks.flat();
+  })();
+  arsoAllDailyCache.set(stationId, promise);
+  return promise;
+}
+
+// ── Season heatmap for ARSO ───────────────────────────────────────────────────
+
+function arsoSeason(month: number): "Winter" | "Spring" | "Summer" | "Autumn" {
+  if (month >= 3 && month <= 5) return "Spring";
+  if (month >= 6 && month <= 8) return "Summer";
+  if (month >= 9 && month <= 11) return "Autumn";
+  return "Winter";
+}
+
+function percentileOf(sorted: number[], p: number): number {
+  const idx = Math.min(Math.floor(sorted.length * p), sorted.length - 1);
+  return sorted[idx]!;
+}
+
+export async function fetchArsoSeasonHeatmap(stationId: number): Promise<SeasonHeatmapRow[]> {
+  const rows = await fetchArsoAllDaily(stationId);
+  const valid = rows.filter(r => r.temperature_max_2m != null);
+  if (!valid.length) return [];
+
+  // Accumulate (year, season) → temps.  December → next year's winter.
+  const bySY = new Map<string, { year: number; season: string; temps: number[] }>();
+  for (const r of valid) {
+    const season = arsoSeason(r.month);
+    const year   = season === "Winter" && r.month === 12 ? r.year + 1 : r.year;
+    const key    = `${year}|${season}`;
+    if (!bySY.has(key)) bySY.set(key, { year, season, temps: [] });
+    bySY.get(key)!.temps.push(r.temperature_max_2m!);
+  }
+
+  const entries = [...bySY.values()]
+    .filter(e => e.temps.length >= 30)
+    .map(e => ({ ...e, avg: e.temps.reduce((a, t) => a + t, 0) / e.temps.length }));
+
+  // Baseline: use 1961-1990 if data starts ≤ 1965, otherwise 1980-2010
+  const yearMin = Math.min(...entries.map(e => e.year));
+  const [blStart, blEnd] = yearMin <= 1965 ? [1961, 1990] : [1980, 2010];
+
+  // Compute per-season baseline percentile thresholds
+  const SEASONS = ["Winter", "Spring", "Summer", "Autumn"] as const;
+  const thresholds = new Map<string, { p10: number; p20: number; p80: number; p95: number }>();
+  for (const s of SEASONS) {
+    const bl = entries.filter(e => e.season === s && e.year >= blStart && e.year <= blEnd)
+                      .map(e => e.avg).sort((a, b) => a - b);
+    if (bl.length < 5) continue;
+    thresholds.set(s, {
+      p10: percentileOf(bl, 0.10),
+      p20: percentileOf(bl, 0.20),
+      p80: percentileOf(bl, 0.80),
+      p95: percentileOf(bl, 0.95),
+    });
+  }
+
+  const CAT_COLORS: Record<string, string> = {
+    cold: "#3a5a8a", cool: "#6c8fb6", normal: "#e7d9b8", hot: "#c25a2c", extreme: "#962c1a",
+  };
+
+  const result: SeasonHeatmapRow[] = [];
+  for (const e of entries) {
+    const th = thresholds.get(e.season);
+    if (!th) continue;
+    const cat =
+      e.avg >= th.p95 ? "extreme" :
+      e.avg >= th.p80 ? "hot" :
+      e.avg >= th.p20 ? "normal" :
+      e.avg >= th.p10 ? "cool" : "cold";
+
+    const seasonEntries = entries.filter(x => x.season === e.season).sort((a, b) => b.avg - a.avg);
+    const rank  = seasonEntries.findIndex(x => x.year === e.year) + 1;
+    const total = seasonEntries.length;
+
+    result.push({
+      x:          SEASONS.indexOf(e.season as any),
+      y:          e.year,
+      season:     e.season as any,
+      avg:        parseFloat(e.avg.toFixed(2)),
+      percentile: ((total - rank) / total) * 100,
+      cat,
+      rank,
+      total,
+      color:      CAT_COLORS[cat]!,
+      n_days:     e.temps.length,
+    });
+  }
+  return result;
+}
+
+// ── Tropical days / nights for ARSO ──────────────────────────────────────────
+
+export interface ArsoTropicalData {
+  years:     number[];
+  counts:    number[];
+  trend10:   number;
+  trendLine: Array<[number, number]>;
+  yearMin:   number;
+  yearMax:   number;
+}
+
+const arsoAllDailyMinCache = new Map<number, Promise<Array<{ year: number; temperature_min_2m: number | null }>>>();
+
+async function fetchArsoAllDailyMin(stationId: number) {
+  if (arsoAllDailyMinCache.has(stationId)) return arsoAllDailyMinCache.get(stationId)!;
+  const promise = (async () => {
+    const chunks = await Promise.all([1,2,3,4,5,6,7,8,9,10,11,12].map(m =>
+      sdGet(
+        "temperature.slovenia_historical.daily",
+        `station_id__exact=${stationId}&month__exact=${m}` +
+        `&_col=year&_col=temperature_min_2m&_sort=year&_size=5000`
+      ) as Promise<Array<{ year: number; temperature_min_2m: number | null }>>
+    ));
+    return chunks.flat();
+  })();
+  arsoAllDailyMinCache.set(stationId, promise);
+  return promise;
+}
+
+export async function fetchArsoTropical(
+  stationId: number,
+  kind:      "days" | "nights",
+  threshold: number,
+): Promise<ArsoTropicalData | null> {
+  const rows = kind === "days"
+    ? await fetchArsoAllDaily(stationId)
+    : await fetchArsoAllDailyMin(stationId);
+  const field = kind === "days" ? "temperature_max_2m" : "temperature_min_2m";
+
+  const byYear = new Map<number, number>();
+  for (const r of rows) {
+    const val = (r as any)[field] as number | null;
+    if (val == null) continue;
+    if (!byYear.has(r.year)) byYear.set(r.year, 0);
+    if (val > threshold) byYear.set(r.year, byYear.get(r.year)! + 1);
+  }
+  if (!byYear.size) return null;
+
+  const years  = [...byYear.keys()].sort((a, b) => a - b);
+  const counts = years.map(y => byYear.get(y)!);
+
+  const n     = years.length;
+  const sumX  = years.reduce((a, x) => a + x, 0);
+  const sumY  = counts.reduce((a, y) => a + y, 0);
+  const sumXY = years.reduce((a, x, i) => a + x * counts[i]!, 0);
+  const sumX2 = years.reduce((a, x) => a + x * x, 0);
+  const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+  const intercept = (sumY - slope * sumX) / n;
+
+  return {
+    years, counts,
+    trend10:   parseFloat((slope * 10).toFixed(2)),
+    trendLine: [
+      [years[0],         parseFloat((slope * years[0]         + intercept).toFixed(1))],
+      [years[n - 1],     parseFloat((slope * years[n - 1]     + intercept).toFixed(1))],
+    ],
+    yearMin: years[0],
+    yearMax: years[n - 1],
+  };
+}
+
 export async function fetchArsoTrend(stationId: number, month: number, day: number): Promise<ArsoTrend | null> {
   // Fetch adjacent months to cover the ±7-day window near month boundaries
   const months = [...new Set([Math.max(1, month - 1), month, Math.min(12, month + 1)])];
-  const chunks = await Promise.all(months.map(m =>
-    sdGet(
-      "temperature.slovenia_historical.daily",
-      `station_id__exact=${stationId}&month__exact=${m}&_col=year&_col=month&_col=day&_col=temperature_max_2m&_size=1000`
-    ) as Promise<Array<{ year: number; month: number; day: number; temperature_max_2m: number }>>
-  ));
-  const allRows = chunks.flat().filter(r => r.temperature_max_2m != null);
+  const rows   = await fetchArsoAllDaily(stationId);
+  const allRows = rows.filter(r => months.includes(r.month) && r.temperature_max_2m != null) as
+    Array<{ year: number; month: number; day: number; temperature_max_2m: number }>;
   if (!allRows.length) return null;
 
   const targetDoy = monthDayToDoy(month, day);

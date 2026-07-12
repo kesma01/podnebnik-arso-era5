@@ -1,5 +1,5 @@
 ---
-title: "Ali je vroče?"
+title: "ARSO — Ali je vroče?"
 layout: base.html
 ---
 
