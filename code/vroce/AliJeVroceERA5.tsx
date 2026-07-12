@@ -122,7 +122,10 @@ function Dashboard(props: { meta: SiteMeta }) {
             <TodayTrendChart date={date()} loc={loc()} />
           </Show>
           <Show when={todayData()?.available && isArso()}>
-            <ArsoTrendChart date={date()} loc={loc()} />
+            <ArsoTrendChart
+              date={date()} loc={loc()}
+              label={props.meta.stations.find(s => s.name === loc())?.label}
+            />
           </Show>
         </div>
       </section>

@@ -100,8 +100,9 @@ function ArsoTrendHighchart(props: { trend: ArsoTrend }) {
 }
 
 interface Props {
-  date: string;
-  loc:  string | null;
+  date:   string;
+  loc:    string | null;
+  label?: string;
 }
 
 export function ArsoTrendChart(props: Props) {
@@ -132,7 +133,7 @@ export function ArsoTrendChart(props: Props) {
           return (
             <>
               <div class="today-chart-title">
-                Najvišje temperature ARSO na postaji {String(props.loc ?? "").replace("arso:", "")} okoli {d().dayLabel} · {d().yearMin}–{d().yearMax} · linearna regresija
+                Najvišje temperature ARSO {props.label ? `na postaji ${props.label}` : ""} okoli {d().dayLabel} · {d().yearMin}–{d().yearMax} · linearna regresija
               </div>
               <ArsoTrendHighchart trend={d()} />
               <p class="today-explain" style={{ padding: "4px 0 2px" }}>

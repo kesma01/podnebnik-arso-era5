@@ -15,6 +15,14 @@ const CATEGORIES: Record<string, string> = {
 };
 
 const CAT_DESCS: Record<string, string> = {
+  freezing: "Med najhladnejšimi {d} v naših zapisih ARSO.",
+  cold:     "Hladneje od večine izmerjenih {d}.",
+  nope:     "Točno takšno, kot {d} v {country} ponavadi je.",
+  hot:      "Med najtoplejšimi {d} v naših zapisih.",
+  hell:     "Izjemna vročina — vrh 5 % vseh {d} glede na meritve ARSO.",
+};
+
+const CAT_DESCS_ERA5: Record<string, string> = {
   freezing: "Med najhladnejšimi {d} v naših {record_years} letih zapisov.",
   cold:     "Hladneje od večine izmerjenih {d}.",
   nope:     "Točno takšno, kot {d} v {country} ponavadi je.",
@@ -23,7 +31,8 @@ const CAT_DESCS: Record<string, string> = {
 };
 
 function catDesc(catKey: string, r: TodayStatus): string {
-  const tpl = CAT_DESCS[catKey] ?? "";
+  const isArso = r.year_min === 0;
+  const tpl = (isArso ? CAT_DESCS : CAT_DESCS_ERA5)[catKey] ?? "";
   const d = fmtDayLabel(r.day_label ?? "");
   const yearMin = r.year_min ?? 1950;
   const yearMax = r.year_max ?? new Date().getFullYear();
@@ -145,7 +154,12 @@ export function TodayCard(props: Props) {
             <div class="today-pct-wrap">
               <span class="today-pct-num">{(r().percentile ?? 0).toFixed(0)}</span>
               <span class="today-pct-label">percentil</span>
-              <span class="today-pct-samples">{(r().n_samples ?? 0).toLocaleString()} vzorcev</span>
+              <Show when={(r().n_samples ?? 0) > 0}>
+                <span class="today-pct-samples">{(r().n_samples ?? 0).toLocaleString()} vzorcev</span>
+              </Show>
+              <Show when={(r().n_samples ?? 0) === 0}>
+                <span class="today-pct-samples">ARSO meritve</span>
+              </Show>
               <Show when={r().is_preliminary}>
                 <span style={{
                   "font-family": "var(--font-mono)", "font-size": "9px",
@@ -192,7 +206,11 @@ export function TodayCard(props: Props) {
 
           {/* Footer */}
           <div class="today-foot">
-            {(r().today_temp ?? 0).toFixed(1)} °C · {(r().percentile ?? 0).toFixed(0)}th percentile · {(r().n_samples ?? 0).toLocaleString()} samples ({r().year_min}–{r().year_max})
+            {(r().today_temp ?? 0).toFixed(1)} °C · {(r().percentile ?? 0).toFixed(0)}. percentil
+            {(r().n_samples ?? 0) > 0
+              ? ` · ${(r().n_samples ?? 0).toLocaleString()} vzorcev (${r().year_min}–${r().year_max})`
+              : " · vir: ARSO"
+            }
           </div>
 
         </div>
