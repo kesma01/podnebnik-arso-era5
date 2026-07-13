@@ -5,14 +5,14 @@ import type {
 
 // ERA5 Datasette — same-origin; override with VITE_DATASETTE_URL for dev
 const DS = `${import.meta.env.VITE_DATASETTE_URL ?? ""}/datasette/climate-si`;
-// ARSO historical data — stage-data.podnebnik.org has CORS open to all origins
-const SD = "https://stage-data.podnebnik.org/temperature";
+// ARSO historical data — local datasette (arso-si.db), same origin
+const SA = `${import.meta.env.VITE_DATASETTE_URL ?? ""}/datasette/arso-si`;
 // Vremenar live proxy — same-origin; override with VITE_VREMENAR_URL for dev
 const VR = `${import.meta.env.VITE_VREMENAR_URL ?? ""}/vremenar/staging`;
 
-// Populated during fetchMeta() from climate-si stations table
+// Populated during fetchMeta()
 let vremenarIdMap: Record<string, number> = {};
-// Populated during fetchMeta() — all ARSO station IDs for national average
+// All ARSO station IDs — used for national Vremenar average
 let arsoStationIds: number[] = [];
 
 export const ARSO_NATIONAL = "arso:national";
@@ -25,47 +25,30 @@ function arsoStationId(loc: string): number {
   return Number(loc.replace("arso:", ""));
 }
 
-// ── Datasette SQL helper ───────────────────────────────────────────────────────
+// ── ARSO local-datasette helper ────────────────────────────────────────────────
 
-async function sdSql<T extends unknown[]>(sql: string): Promise<T[]> {
-  const resp = await fetch(`${SD}.json?sql=${encodeURIComponent(sql)}`);
-  if (!resp.ok) throw new Error(`stage-data SQL ${resp.status}`);
-  const data = await resp.json() as { rows: T[] };
-  return data.rows;
+async function saGet(table: string, params: string): Promise<any> {
+  const resp = await fetch(`${SA}/${table}.json?_shape=array&${params}`);
+  if (!resp.ok) throw new Error(`arso-si datasette ${resp.status}: ${table}`);
+  return resp.json();
 }
 
-// ── National ARSO average (per-month cache of station-averaged daily max) ─────
-
-interface NationalDayRow { year: number; month: number; day: number; avg: number }
-
-const arsoNationalMonthCache = new Map<number, Promise<NationalDayRow[]>>();
-
-async function fetchArsoNationalByMonth(month: number): Promise<NationalDayRow[]> {
-  if (arsoNationalMonthCache.has(month)) return arsoNationalMonthCache.get(month)!;
-  const promise = sdSql<[number, number, number, number]>(
-    `SELECT year,month,day,AVG(temperature_max_2m) as avg` +
-    ` FROM "temperature.slovenia_historical.daily"` +
-    ` WHERE month=${month} AND temperature_max_2m IS NOT NULL` +
-    ` GROUP BY year,month,day ORDER BY year,month,day`
-  ).then(rows => rows.map(([year, month, day, avg]) => ({ year, month, day, avg })));
-  arsoNationalMonthCache.set(month, promise);
-  return promise;
-}
+// ── National ARSO average — pooled ±7-day window across all stations ──────────
 
 async function computeArsoNationalPercentiles(month: number, day: number): Promise<ComputedPercentiles | null> {
-  const months  = [...new Set([Math.max(1, month - 1), month, Math.min(12, month + 1)])];
-  const chunks  = await Promise.all(months.map(m => fetchArsoNationalByMonth(m)));
-  const allRows = chunks.flat();
+  const allChunks = await Promise.all(arsoStationIds.map(id => fetchArsoAllDaily(id)));
+  const flat = allChunks.flat();
 
   const targetDoy = monthDayToDoy(month, day);
-  const inWindow  = allRows.filter(r => {
+  const inWindow  = flat.filter(r => {
+    if (r.temperature_max_2m == null) return false;
     const doy  = monthDayToDoy(r.month, r.day);
     const diff = Math.abs(doy - targetDoy);
     return Math.min(diff, 365 - diff) <= 7;
   });
   if (inWindow.length < 10) return null;
 
-  const sorted = inWindow.map(r => r.avg).sort((a, b) => a - b);
+  const sorted = inWindow.map(r => r.temperature_max_2m!).sort((a, b) => a - b);
   const years  = inWindow.map(r => r.year);
   return {
     p05: percentileOf(sorted, 0.05), p10: percentileOf(sorted, 0.10),
@@ -101,12 +84,6 @@ async function dsGet<T>(path: string): Promise<T> {
   return resp.json() as Promise<T>;
 }
 
-async function sdGet(table: string, params: string): Promise<any> {
-  const encoded = table.replace(/\./g, "~2E");
-  const resp = await fetch(`${SD}/${encoded}.json?_shape=array&${params}`);
-  if (!resp.ok) throw new Error(`stage-data ${resp.status}: ${table}`);
-  return resp.json();
-}
 
 function doyToMonthDay(doy: number): { month: number; day: number } {
   const d = new Date(Date.UTC(2001, 0, 1));
@@ -237,7 +214,7 @@ export async function fetchMeta(): Promise<SiteMeta> {
       era5_name: string; name: string; lat: number; lon: number;
       elevation: number; station_id: number | null;
     }>>("stations.json?_shape=array&_col=era5_name&_col=name&_col=lat&_col=lon&_col=elevation&_col=station_id&_size=30"),
-    sdGet("temperature.slovenia_stations", "_col=station_id&_col=name&_col=name_locative&_sort=name&_size=50"),
+    saGet("stations", "_col=station_id&_col=name&_col=name_locative&_col=latitude&_col=longitude&_col=elevation&_sort=name&_size=20"),
   ]);
 
   // Build Vremenar live-data map from ERA5 stations
@@ -247,13 +224,11 @@ export async function fetchMeta(): Promise<SiteMeta> {
       .map(s => [s.era5_name, s.station_id as number])
   );
 
-  // ARSO stations — need lat/lon from Vremenar or hardcode; use null for now
-  // stage-data stations table: [rowid, station_id, name, name_locative]
-  type ArsoRow = { station_id: number; name: string; name_locative: string };
+  type ArsoRow = { station_id: number; name: string; name_locative: string; latitude: number; longitude: number; elevation: number };
   const arsoStations: ArsoRow[] = Array.isArray(arsoRaw) ? arsoRaw : [];
 
   // Populate module-level list for national average Vremenar fetches
-  arsoStationIds = arsoStations.map(s => s.station_id);
+  arsoStationIds = arsoStations.filter(s => s.station_id != null).map(s => s.station_id);
 
   const stations = [
     ...era5Stations.map(s => ({
@@ -268,9 +243,9 @@ export async function fetchMeta(): Promise<SiteMeta> {
       name:      `arso:${s.station_id}`,
       label:     s.name,
       source:    "arso" as const,
-      lat:       0,
-      lon:       0,
-      elevation: 0,
+      lat:       s.latitude ?? 0,
+      lon:       s.longitude ?? 0,
+      elevation: s.elevation ?? 0,
     })),
   ];
 
@@ -319,11 +294,14 @@ export async function fetchTodayStatus(date: string, loc: string | null): Promis
         return valid.length > 0 ? valid.reduce((a, b) => a + b) / valid.length : null;
       });
     } else {
-      // Historical average from stage-data
-      todayTempPromise = sdSql<[number | null]>(
-        `SELECT AVG(temperature_max_2m) FROM "temperature.slovenia_historical.daily"` +
-        ` WHERE date='${date}' AND temperature_max_2m IS NOT NULL`
-      ).then(rows => (typeof rows[0]?.[0] === "number" ? rows[0][0] : null));
+      // Historical national average — fetch all stations for this date, average client-side
+      todayTempPromise = (saGet(
+        "daily",
+        `date__exact=${date}&_col=temperature_max_2m&_size=20`
+      ) as Promise<Array<{ temperature_max_2m: number | null }>>).then(rows => {
+        const valid = rows.filter(r => r.temperature_max_2m != null).map(r => r.temperature_max_2m!);
+        return valid.length > 0 ? valid.reduce((a, b) => a + b) / valid.length : null;
+      });
     }
 
     const [todayTemp, percs] = await Promise.all([
@@ -415,17 +393,29 @@ export async function fetchLast7(date: string, loc: string | null): Promise<Last
   const era5Name = loc ?? "Ljubljana";
 
   if (era5Name === ARSO_NATIONAL) {
-    const rows = await sdSql<[string, number, number, number, number]>(
-      `SELECT date,year,month,day,AVG(temperature_max_2m) as avg` +
-      ` FROM "temperature.slovenia_historical.daily"` +
-      ` WHERE date<='${date}' AND temperature_max_2m IS NOT NULL` +
-      ` GROUP BY date,year,month,day ORDER BY date DESC LIMIT 7`
+    // Use station 0 to get the 7 most recent dates, then average all stations per date
+    const refId = arsoStationIds[0];
+    if (!refId) return { available: false, days: [] };
+    const rawDates = await saGet(
+      "daily",
+      `station_id__exact=${refId}&date__lte=${date}&_sort_desc=date&_size=7&_col=date&_col=month&_col=day`
+    ) as Array<{ date: string; month: number; day: number }>;
+    // Only include dates that are actually within the last 7 calendar days of `date`
+    const selectedMs = new Date(date).getTime();
+    const dateDates = rawDates.filter(d =>
+      selectedMs - new Date(d.date).getTime() <= 7 * 86_400_000
     );
-    if (!rows.length) return { available: false, days: [] };
+    if (!dateDates.length) return { available: false, days: [] };
+
     const dayResults = await Promise.all(
-      rows.map(async ([dateStr, , month, day, avg]) => {
-        const percs = await computeArsoNationalPercentiles(month, day);
-        if (!percs) return null;
+      dateDates.map(async ({ date: dateStr, month, day }) => {
+        const [allTemps, percs] = await Promise.all([
+          saGet("daily", `date__exact=${dateStr}&_col=temperature_max_2m&_size=20`) as Promise<Array<{ temperature_max_2m: number | null }>>,
+          computeArsoNationalPercentiles(month, day),
+        ]);
+        const valid = allTemps.filter(r => r.temperature_max_2m != null).map(r => r.temperature_max_2m!);
+        const avg = valid.length > 0 ? valid.reduce((a, b) => a + b) / valid.length : null;
+        if (avg == null || !percs) return null;
         const cat = categorizeArso(avg, percs);
         return { date: dateStr, day_label: dayLabel(month, day), today_temp: parseFloat(avg.toFixed(1)), percentile: cat.percentile, category_key: cat.category_key, color: cat.color };
       })
@@ -436,15 +426,19 @@ export async function fetchLast7(date: string, loc: string | null): Promise<Last
 
   if (isArsoLoc(era5Name)) {
     const stationId = arsoStationId(era5Name);
-    const rows = await sdGet(
-      "temperature.slovenia_historical.daily",
+    const rows = await saGet(
+      "daily",
       `station_id__exact=${stationId}&date__lte=${date}&_sort_desc=date&_size=7&_col=date&_col=temperature_max_2m&_col=month&_col=day`
     ) as Array<{ date: string; temperature_max_2m: number; month: number; day: number }>;
 
-    if (!Array.isArray(rows) || !rows.length) return { available: false, days: [] };
+    const selectedMs2 = new Date(date).getTime();
+    const recentRows = rows.filter(r =>
+      selectedMs2 - new Date(r.date).getTime() <= 7 * 86_400_000
+    );
+    if (!Array.isArray(recentRows) || !recentRows.length) return { available: false, days: [] };
 
     const dayResults = await Promise.all(
-      rows.map(async r => {
+      recentRows.map(async r => {
         const percs = await computeArsoPercentiles(stationId, r.month, r.day);
         if (!percs || r.temperature_max_2m == null) return null;
         const cat = categorizeArso(r.temperature_max_2m, percs);
@@ -625,10 +619,9 @@ const arsoAllDailyCache = new Map<number, Promise<DailyRow[]>>();
 async function fetchArsoAllDaily(stationId: number): Promise<DailyRow[]> {
   if (arsoAllDailyCache.has(stationId)) return arsoAllDailyCache.get(stationId)!;
   const promise = (async () => {
-    // 12 parallel monthly requests, _size=5000 to capture full record length
     const chunks = await Promise.all([1,2,3,4,5,6,7,8,9,10,11,12].map(m =>
-      sdGet(
-        "temperature.slovenia_historical.daily",
+      saGet(
+        "daily",
         `station_id__exact=${stationId}&month__exact=${m}` +
         `&_col=year&_col=month&_col=day&_col=temperature_max_2m&_sort=year&_size=5000`
       ) as Promise<DailyRow[]>
@@ -742,8 +735,8 @@ async function fetchArsoAllDailyMin(stationId: number) {
   if (arsoAllDailyMinCache.has(stationId)) return arsoAllDailyMinCache.get(stationId)!;
   const promise = (async () => {
     const chunks = await Promise.all([1,2,3,4,5,6,7,8,9,10,11,12].map(m =>
-      sdGet(
-        "temperature.slovenia_historical.daily",
+      saGet(
+        "daily",
         `station_id__exact=${stationId}&month__exact=${m}` +
         `&_col=year&_col=temperature_min_2m&_sort=year&_size=5000`
       ) as Promise<Array<{ year: number; temperature_min_2m: number | null }>>
